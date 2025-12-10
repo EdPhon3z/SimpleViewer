@@ -1,0 +1,133 @@
+<Window x:Class="SimpleViewer.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:SimpleViewer"
+        mc:Ignorable="d"
+        Title="Simple Viewer" Height="600" Width="900"
+        Icon="assets/SimpleViewer.ico"
+        Background="Black"
+        PreviewKeyDown="Window_PreviewKeyDown"
+        AllowDrop="True"
+        DragEnter="Window_DragEnter"
+        DragOver="Window_DragOver"
+        Drop="Window_Drop">
+    <Grid AllowDrop="True"
+          DragEnter="Window_DragEnter"
+          DragOver="Window_DragOver"
+          Drop="Window_Drop">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Border x:Name="ControlPanel"
+                Background="#AA1E1E1E"
+                Padding="6"
+                Grid.Row="0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal"
+                            Grid.Column="0"
+                            VerticalAlignment="Center">
+                    <Button x:Name="HelpButton"
+                            Width="36"
+                            Height="32"
+                            Margin="4,0"
+                            Click="HelpButton_Click"
+                            ToolTip="Help"
+                            VerticalAlignment="Center"
+                            Background="Transparent"
+                            BorderBrush="Transparent"/>
+                    <Button x:Name="BrowseButton"
+                            Width="36"
+                            Height="32"
+                            Margin="4,0"
+                            Click="BrowseButton_Click"
+                            ToolTip="Select Folder"
+                            VerticalAlignment="Center"
+                            Background="Transparent"
+                            BorderBrush="Transparent"/>
+                    <TextBlock x:Name="FolderPathText"
+                               Text="No folder selected"
+                               Foreground="White"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               Width="260"
+                               Margin="4,0"/>
+                    <CheckBox x:Name="ImagesCheckBox"
+                              Content="Images"
+                              Foreground="White"
+                              IsChecked="True"
+                              VerticalAlignment="Center"
+                              Checked="FilterCheckBox_Changed"
+                              Unchecked="FilterCheckBox_Changed"
+                              Margin="4,0"/>
+                    <CheckBox x:Name="VideosCheckBox"
+                              Content="Videos"
+                              Foreground="White"
+                              IsChecked="True"
+                              VerticalAlignment="Center"
+                              Checked="FilterCheckBox_Changed"
+                              Unchecked="FilterCheckBox_Changed"
+                              Margin="4,0"/>
+                    <CheckBox x:Name="RecursiveCheckBox"
+                              Content="Subfolders"
+                              Foreground="White"
+                              VerticalAlignment="Center"
+                              Checked="RecursiveCheckBox_Changed"
+                              Unchecked="RecursiveCheckBox_Changed"
+                              Margin="4,0"/>
+                    <CheckBox x:Name="SlideshowCheckBox"
+                              Content="Slideshow"
+                              Foreground="White"
+                              VerticalAlignment="Center"
+                              Checked="SlideshowCheckBox_Changed"
+                              Unchecked="SlideshowCheckBox_Changed"
+                              Margin="4,0"/>
+                    <TextBox x:Name="SlideshowIntervalBox"
+                             Width="42"
+                             MaxLength="3"
+                             Text="4"
+                             VerticalContentAlignment="Center"
+                             TextAlignment="Center"
+                             TextChanged="SlideshowIntervalBox_TextChanged"
+                             Margin="4,0"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center"
+                            HorizontalAlignment="Right"
+                            Margin="8,0,0,0">
+                    <TextBlock x:Name="FileNameText"
+                               Foreground="White"
+                               VerticalAlignment="Center"
+                               Text="File: --"
+                               Width="220"
+                               TextTrimming="CharacterEllipsis"
+                               Margin="0,0,8,0"/>
+                    <TextBlock x:Name="MediaInfoText"
+                               Foreground="White"
+                               VerticalAlignment="Center"
+                               Text="Size: --"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="1" Background="Black">
+            <Image x:Name="ImageViewer"
+                   Stretch="Uniform"
+                   Visibility="Collapsed"/>
+            <MediaElement x:Name="VideoViewer"
+                          Stretch="Uniform"
+                          LoadedBehavior="Manual"
+                          UnloadedBehavior="Manual"
+                          MediaEnded="VideoViewer_MediaEnded"
+                          Visibility="Collapsed"/>
+        </Grid>
+    </Grid>
+</Window>

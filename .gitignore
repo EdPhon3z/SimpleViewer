@@ -1,0 +1,29 @@
+## Ignore Visual Studio / .NET build artifacts
+bin/
+obj/
+[Bb]uild/
+[Mm] packaged/
+
+## VS caches
+.vs/
+*.user
+*.suo
+*.userosscache
+*.userprefs
+
+## Logs
+*.log
+
+## NuGet
+packages/
+*.nupkg
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## DotNet tools
+*.snupkg
+
+## OS generated
+.DS_Store
+Thumbs.db
