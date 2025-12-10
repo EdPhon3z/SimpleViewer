@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Simple Viewer
 
 Current Version: **1.0.0**
@@ -41,3 +42,7 @@ Grab the latest `SimpleViewer_win-x64.zip` from the [Releases](https://github.co
 
 ## License
 This project is distributed under the [EdPhonez Non-Commercial License (NC-1.0)](https://github.com/EdPhon3z/SimpleViewer/blob/main/LICENSE). Forking and personal/internal use are permitted, but commercial use is prohibited.
+=======
+# SimpleViewer
+Simple Viewer is a minimalist WPF media browser that lets you flip through photos and videos fullscreen. Pick a folder or drag one in, filter by media type, run timed slideshows, loop videos seamlessly, and soft-delete files into a _delete_ holding folder—all controlled via keyboard shortcuts for a distraction-free viewing experience.
+>>>>>>> 293ccc5bb4e92b982e401c06f039da9e8a026a1d
