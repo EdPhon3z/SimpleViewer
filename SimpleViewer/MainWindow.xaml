@@ -9,10 +9,14 @@
         Icon="assets/SimpleViewer.ico"
         Background="Black"
         PreviewKeyDown="Window_PreviewKeyDown"
+        PreviewMouseWheel="Window_PreviewMouseWheel"
         AllowDrop="True"
         DragEnter="Window_DragEnter"
         DragOver="Window_DragOver"
         Drop="Window_Drop">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
+    </Window.Resources>
     <Grid AllowDrop="True"
           DragEnter="Window_DragEnter"
           DragOver="Window_DragOver"
@@ -23,7 +27,7 @@
         </Grid.RowDefinitions>
 
         <Border x:Name="ControlPanel"
-                Background="#AA1E1E1E"
+                Background="{DynamicResource {x:Static SystemColors.ControlBrushKey}}"
                 Padding="6"
                 Grid.Row="0">
             <Grid>
@@ -34,15 +38,6 @@
                 <StackPanel Orientation="Horizontal"
                             Grid.Column="0"
                             VerticalAlignment="Center">
-                    <Button x:Name="HelpButton"
-                            Width="36"
-                            Height="32"
-                            Margin="4,0"
-                            Click="HelpButton_Click"
-                            ToolTip="Help"
-                            VerticalAlignment="Center"
-                            Background="Transparent"
-                            BorderBrush="Transparent"/>
                     <Button x:Name="BrowseButton"
                             Width="36"
                             Height="32"
@@ -51,52 +46,141 @@
                             ToolTip="Select Folder"
                             VerticalAlignment="Center"
                             Background="Transparent"
-                            BorderBrush="Transparent"/>
+                            BorderBrush="Transparent"
+                            FocusVisualStyle="{x:Null}"/>
+                    <Button x:Name="RecentFoldersButton"
+                            Width="36"
+                            Height="32"
+                            Margin="4,0"
+                            Click="RecentFoldersButton_Click"
+                            ToolTip="Recent folders"
+                            VerticalAlignment="Center"
+                            Background="Transparent"
+                            BorderBrush="Transparent"
+                            FocusVisualStyle="{x:Null}">
+                        <Button.ContextMenu>
+                            <ContextMenu x:Name="RecentFoldersContextMenu">
+                                <MenuItem Header="(No recent folders)"
+                                          IsEnabled="False"/>
+                            </ContextMenu>
+                        </Button.ContextMenu>
+                    </Button>
+                    <Button x:Name="OptionsButton"
+                            Width="36"
+                            Height="32"
+                            Margin="4,0"
+                            Click="OptionsButton_Click"
+                            ToolTip="Options"
+                            VerticalAlignment="Center"
+                            Background="Transparent"
+                            BorderBrush="Transparent"
+                            FocusVisualStyle="{x:Null}">
+                        <Button.ContextMenu>
+                            <ContextMenu x:Name="OptionsContextMenu"
+                                         Background="{DynamicResource {x:Static SystemColors.MenuBrushKey}}"
+                                         Foreground="{DynamicResource {x:Static SystemColors.MenuTextBrushKey}}">
+                                <MenuItem Header="Filters" StaysOpenOnClick="True">
+                                    <StackPanel Margin="6,4">
+                                        <CheckBox x:Name="ImagesCheckBox"
+                                                  Content="Images"
+                                                  Foreground="{DynamicResource {x:Static SystemColors.MenuTextBrushKey}}"
+                                                  IsChecked="True"
+                                                  Checked="FilterCheckBox_Changed"
+                                                  Unchecked="FilterCheckBox_Changed"
+                                                  Margin="0,2"/>
+                                        <CheckBox x:Name="VideosCheckBox"
+                                                  Content="Videos"
+                                                  Foreground="{DynamicResource {x:Static SystemColors.MenuTextBrushKey}}"
+                                                  IsChecked="True"
+                                                  Checked="FilterCheckBox_Changed"
+                                                  Unchecked="FilterCheckBox_Changed"
+                                                  Margin="0,2"/>
+                                        <CheckBox x:Name="RecursiveCheckBox"
+                                                  Content="Subfolders"
+                                                  Foreground="{DynamicResource {x:Static SystemColors.MenuTextBrushKey}}"
+                                                  Checked="RecursiveCheckBox_Changed"
+                                                  Unchecked="RecursiveCheckBox_Changed"
+                                                  Margin="0,2"/>
+                                    </StackPanel>
+                                </MenuItem>
+                                <MenuItem Header="Slideshow" StaysOpenOnClick="True">
+                                    <StackPanel Margin="6,4">
+                                        <CheckBox x:Name="SlideshowCheckBox"
+                                                  Content="Enable slideshow"
+                                                  Foreground="{DynamicResource {x:Static SystemColors.MenuTextBrushKey}}"
+                                                  Checked="SlideshowCheckBox_Changed"
+                                                  Unchecked="SlideshowCheckBox_Changed"
+                                                  Margin="0,2"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                            <TextBlock Text="Interval (s):"
+                                                       Foreground="{DynamicResource {x:Static SystemColors.MenuTextBrushKey}}"
+                                                       VerticalAlignment="Center"
+                                                       Margin="0,0,6,0"/>
+                                            <TextBox x:Name="SlideshowIntervalBox"
+                                                     Width="42"
+                                                     MaxLength="3"
+                                                     Text="4"
+                                                     VerticalContentAlignment="Center"
+                                                     TextAlignment="Center"
+                                                     TextChanged="SlideshowIntervalBox_TextChanged"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </MenuItem>
+                                <MenuItem Header="View">
+                                    <MenuItem x:Name="SingleViewMenuItem"
+                                              Header="Single view"
+                                              IsCheckable="True"
+                                              IsChecked="True"
+                                              Click="ViewModeMenuItem_Click"/>
+                                    <MenuItem x:Name="GridViewMenuItem"
+                                              Header="Grid view"
+                                              InputGestureText="G"
+                                              IsCheckable="True"
+                                              Click="ViewModeMenuItem_Click"/>
+                                </MenuItem>
+                                <MenuItem Header="Sort by">
+                                    <MenuItem x:Name="SortCreatedMenuItem"
+                                              Header="Newest (date created)"
+                                              IsCheckable="True"
+                                              IsChecked="True"
+                                              Tag="NewestCreated"
+                                              Click="SortMenuItem_Click"/>
+                                    <MenuItem x:Name="SortModifiedMenuItem"
+                                              Header="Newest (date modified)"
+                                              IsCheckable="True"
+                                              Tag="NewestModified"
+                                              Click="SortMenuItem_Click"/>
+                                    <MenuItem x:Name="SortNameMenuItem"
+                                              Header="Name (A - Z)"
+                                              IsCheckable="True"
+                                              Tag="Name"
+                                              Click="SortMenuItem_Click"/>
+                                    <MenuItem x:Name="SortRandomMenuItem"
+                                              Header="Randomized"
+                                              IsCheckable="True"
+                                              Tag="Random"
+                                              Click="SortMenuItem_Click"/>
+                                </MenuItem>
+                            </ContextMenu>
+                        </Button.ContextMenu>
+                    </Button>
+                    <Button x:Name="HelpButton"
+                            Width="36"
+                            Height="32"
+                            Margin="4,0"
+                            Click="HelpButton_Click"
+                            ToolTip="Help"
+                            VerticalAlignment="Center"
+                            Background="Transparent"
+                            BorderBrush="Transparent"
+                            FocusVisualStyle="{x:Null}"/>
                     <TextBlock x:Name="FolderPathText"
                                Text="No folder selected"
-                               Foreground="White"
+                               Foreground="{DynamicResource {x:Static SystemColors.ControlTextBrushKey}}"
                                VerticalAlignment="Center"
                                TextTrimming="CharacterEllipsis"
                                Width="260"
-                               Margin="4,0"/>
-                    <CheckBox x:Name="ImagesCheckBox"
-                              Content="Images"
-                              Foreground="White"
-                              IsChecked="True"
-                              VerticalAlignment="Center"
-                              Checked="FilterCheckBox_Changed"
-                              Unchecked="FilterCheckBox_Changed"
-                              Margin="4,0"/>
-                    <CheckBox x:Name="VideosCheckBox"
-                              Content="Videos"
-                              Foreground="White"
-                              IsChecked="True"
-                              VerticalAlignment="Center"
-                              Checked="FilterCheckBox_Changed"
-                              Unchecked="FilterCheckBox_Changed"
-                              Margin="4,0"/>
-                    <CheckBox x:Name="RecursiveCheckBox"
-                              Content="Subfolders"
-                              Foreground="White"
-                              VerticalAlignment="Center"
-                              Checked="RecursiveCheckBox_Changed"
-                              Unchecked="RecursiveCheckBox_Changed"
-                              Margin="4,0"/>
-                    <CheckBox x:Name="SlideshowCheckBox"
-                              Content="Slideshow"
-                              Foreground="White"
-                              VerticalAlignment="Center"
-                              Checked="SlideshowCheckBox_Changed"
-                              Unchecked="SlideshowCheckBox_Changed"
-                              Margin="4,0"/>
-                    <TextBox x:Name="SlideshowIntervalBox"
-                             Width="42"
-                             MaxLength="3"
-                             Text="4"
-                             VerticalContentAlignment="Center"
-                             TextAlignment="Center"
-                             TextChanged="SlideshowIntervalBox_TextChanged"
-                             Margin="4,0"/>
+                               Margin="12,0,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="1"
                             Orientation="Horizontal"
@@ -104,14 +188,14 @@
                             HorizontalAlignment="Right"
                             Margin="8,0,0,0">
                     <TextBlock x:Name="FileNameText"
-                               Foreground="White"
+                               Foreground="{DynamicResource {x:Static SystemColors.ControlTextBrushKey}}"
                                VerticalAlignment="Center"
                                Text="File: --"
                                Width="220"
                                TextTrimming="CharacterEllipsis"
                                Margin="0,0,8,0"/>
                     <TextBlock x:Name="MediaInfoText"
-                               Foreground="White"
+                               Foreground="{DynamicResource {x:Static SystemColors.ControlTextBrushKey}}"
                                VerticalAlignment="Center"
                                Text="Size: --"/>
                 </StackPanel>
@@ -119,15 +203,176 @@
         </Border>
 
         <Grid Grid.Row="1" Background="Black">
-            <Image x:Name="ImageViewer"
-                   Stretch="Uniform"
-                   Visibility="Collapsed"/>
+            <Border Background="Transparent">
+                <Image x:Name="ImageViewer"
+                       Stretch="Uniform"
+                       RenderTransformOrigin="0.5,0.5"
+                       Visibility="Collapsed"
+                       MouseLeftButtonDown="ImageViewer_MouseLeftButtonDown"
+                       MouseLeftButtonUp="ImageViewer_MouseLeftButtonUp"
+                       MouseMove="ImageViewer_MouseMove"/>
+            </Border>
             <MediaElement x:Name="VideoViewer"
                           Stretch="Uniform"
                           LoadedBehavior="Manual"
                           UnloadedBehavior="Manual"
                           MediaEnded="VideoViewer_MediaEnded"
                           Visibility="Collapsed"/>
+            <ListBox x:Name="GridViewControl"
+                     Background="Transparent"
+                     BorderThickness="0"
+                     Visibility="Collapsed"
+                     Margin="12"
+                     ScrollViewer.CanContentScroll="False"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     SelectionMode="Single"
+                     SelectionChanged="GridViewControl_SelectionChanged"
+                     MouseDoubleClick="GridViewControl_MouseDoubleClick">
+                <ListBox.LayoutTransform>
+                    <ScaleTransform x:Name="GridViewScaleTransform"
+                                    ScaleX="1"
+                                    ScaleY="1"/>
+                </ListBox.LayoutTransform>
+                <ListBox.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel IsItemsHost="True"/>
+                    </ItemsPanelTemplate>
+                </ListBox.ItemsPanel>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Border Width="180"
+                                Height="180"
+                                Margin="6"
+                                Background="#222"
+                                BorderBrush="#444"
+                                BorderThickness="1"
+                                CornerRadius="6">
+                            <StackPanel>
+                                <Grid Height="120">
+                                    <Image Source="{Binding Thumbnail}"
+                                           Stretch="UniformToFill"
+                                           Visibility="{Binding IsImage, Converter={StaticResource BoolToVisibilityConverter}}"/>
+                                    <Border Background="#55000000"
+                                            Visibility="{Binding IsVideo, Converter={StaticResource BoolToVisibilityConverter}}">
+                                        <StackPanel HorizontalAlignment="Center"
+                                                    VerticalAlignment="Center">
+                                            <TextBlock Text="Video"
+                                                       Foreground="White"
+                                                       FontWeight="Bold"
+                                                       HorizontalAlignment="Center"/>
+                                            <TextBlock Text="{Binding Path=FileName}"
+                                                       Foreground="#CCCCCC"
+                                                       FontSize="12"
+                                                       HorizontalAlignment="Center"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Margin="0,4,0,0"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+                                <TextBlock Text="{Binding FileName}"
+                                           Foreground="White"
+                                           TextTrimming="CharacterEllipsis"
+                                           Margin="4,6,4,0"
+                                           HorizontalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+            <Border x:Name="MetadataPanel"
+                    Background="#CC1E1E1E"
+                    BorderBrush="#444"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="6"
+                    Margin="8"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Stretch"
+                    Width="320"
+                    Visibility="Collapsed">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <StackPanel Orientation="Horizontal"
+                                Grid.Row="0"
+                                VerticalAlignment="Center">
+                        <TextBlock Text="Metadata"
+                                   Foreground="White"
+                                   FontWeight="Bold"
+                                   VerticalAlignment="Center"/>
+                        <Button x:Name="CopyMetadataButton"
+                                Content="Copy"
+                                Margin="8,0,0,0"
+                                Padding="6,2"
+                                Click="CopyMetadataButton_Click"/>
+                        <Button x:Name="CloseMetadataButton"
+                                Content="X"
+                                Margin="4,0,0,0"
+                                Padding="6,2"
+                                Click="CloseMetadataButton_Click"/>
+                    </StackPanel>
+                    <ScrollViewer Grid.Row="1"
+                                  Margin="0,6,0,6"
+                                  VerticalScrollBarVisibility="Auto">
+                        <TextBox x:Name="MetadataTextBox"
+                                 TextWrapping="Wrap"
+                                 AcceptsReturn="True"
+                                 IsReadOnly="True"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 Foreground="White"
+                                 FontFamily="Consolas"
+                                 FontSize="12"/>
+                    </ScrollViewer>
+                    <TextBlock Grid.Row="2"
+                               Foreground="#CCCCCC"
+                               FontSize="10"
+                               Text="Press X to toggle metadata"/>
+                </Grid>
+            </Border>
         </Grid>
+        <Border x:Name="SlideshowIndicator"
+                Grid.RowSpan="2"
+                Background="#AA000000"
+                CornerRadius="40"
+                Padding="24"
+                Visibility="Collapsed"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Panel.ZIndex="20">
+            <TextBlock x:Name="SlideshowIndicatorText"
+                       Text="▶"
+                       Foreground="White"
+                       FontSize="64"
+                       FontFamily="Segoe UI Symbol"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"/>
+        </Border>
+        <Border x:Name="LoadingOverlay"
+                Grid.RowSpan="2"
+                Background="#80000000"
+                Visibility="Collapsed">
+            <Border HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Width="220"
+                    Background="#FF222222"
+                    Padding="16"
+                    CornerRadius="8">
+                <StackPanel>
+                    <ProgressBar IsIndeterminate="True"
+                                 Height="8"
+                                 Foreground="#FF00B7FF"/>
+                    <TextBlock Text="Loading files..."
+                               Margin="0,12,0,0"
+                               HorizontalAlignment="Center"
+                               Foreground="White"
+                               FontWeight="Bold"/>
+                </StackPanel>
+            </Border>
+        </Border>
     </Grid>
 </Window>
