@@ -1,6 +1,6 @@
 # Simple Viewer
 
-Current Version: **1.1.0**
+Current Version: **1.2.0**
 
 ![Simple Viewer icon](SimpleViewer/assets/icon.jpg)
 
@@ -13,9 +13,21 @@ Simple Viewer is a minimalist Windows desktop app for quickly browsing photos an
 - Single view plus Grid view (`G`) with Ctrl + mouse wheel zoom and drag-to-pan when zoomed over 100%
 - Mouse wheel navigation, arrow keys, `0` to reset zoom, and `Ctrl + C` to copy the current image bitmap
 - Video timeline with scrubbing, Up/Down volume keys, `Space` to pause/resume, and `M` for mute
-- Metadata panel shows EXIF + Comfy workflow data, includes a Copy button, and toggles with the `X` key
+- Metadata panel shows EXIF/Comfy data plus video duration/resolution/codec info via TagLib#, includes a Copy button, and toggles with the `X` key
 - Recent folders button remembers the last 5 paths with a built-in “Clear history”; optional Explorer context menu installs from Options
 - No ads, no telemetry; everything stays local
+
+## What's New in 1.2.0
+- **Video timeline scrubber**
+  - Bottom overlay shows elapsed/total time with click-or-drag scrubbing and precise seeking even while looping.
+  - Scrubbing pauses the timer during manual drags and resumes cleanly when released.
+- **Video zoom & pan**
+  - Ctrl + mouse wheel now zooms into videos; click-drag pans when zoomed past 100%, mirroring the image workflow.
+- **Video metadata**
+  - Metadata panel extracts video duration, resolution, codecs, bitrate, audio sample rate, and common tags (Title/Album/etc.).
+  - Best-effort scan pulls in embedded workflow JSON when present.
+- **Smart slideshow**
+  - Slideshow waits for the current video to finish playing before advancing, while photos still use the timer interval.
 
 ## What's New in 1.1.0
 - **Toolbar & layout**
