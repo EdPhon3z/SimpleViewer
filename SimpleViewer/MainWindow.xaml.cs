@@ -42,7 +42,7 @@ public partial class MainWindow : Window
     }
 
     private const string DeleteFolderName = "_delete_";
-    private const string AppVersion = "1.1.0";
+    private const string AppVersion = "1.2.0";
     private const int FolderIconResourceId = -4;
     private const int HelpIconResourceId = -99;
     private const int OptionsIconResourceId = -114;
