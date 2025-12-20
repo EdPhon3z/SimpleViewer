@@ -27,3 +27,7 @@ artifacts/
 ## OS generated
 .DS_Store
 Thumbs.db
+
+
+publish/
+SimpleViewer_win-x64*.zip

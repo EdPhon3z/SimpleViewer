@@ -161,6 +161,13 @@
                                               Tag="Random"
                                               Click="SortMenuItem_Click"/>
                                 </MenuItem>
+                                <Separator/>
+                                <MenuItem Header="Explorer integration">
+                                    <MenuItem Header="Install context menu"
+                                              Click="InstallExplorerIntegrationMenuItem_Click"/>
+                                    <MenuItem Header="Remove context menu"
+                                              Click="RemoveExplorerIntegrationMenuItem_Click"/>
+                                </MenuItem>
                             </ContextMenu>
                         </Button.ContextMenu>
                     </Button>
@@ -216,8 +223,57 @@
                           Stretch="Uniform"
                           LoadedBehavior="Manual"
                           UnloadedBehavior="Manual"
+                          MediaOpened="VideoViewer_MediaOpened"
                           MediaEnded="VideoViewer_MediaEnded"
-                          Visibility="Collapsed"/>
+                          Visibility="Collapsed"
+                          RenderTransformOrigin="0.5,0.5"
+                          MouseLeftButtonDown="VideoViewer_MouseLeftButtonDown"
+                          MouseLeftButtonUp="VideoViewer_MouseLeftButtonUp"
+                          MouseMove="VideoViewer_MouseMove"/>
+            <Border x:Name="VideoProgressPanel"
+                    Grid.Row="1"
+                    Background="#88000000"
+                    CornerRadius="8"
+                    Padding="10"
+                    Margin="100,0,100,24"
+                    HorizontalAlignment="Stretch"
+                    VerticalAlignment="Bottom"
+                    Visibility="Collapsed"
+                    Panel.ZIndex="30">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Slider x:Name="VideoProgressSlider"
+                            Grid.Column="0"
+                            Minimum="0"
+                            Maximum="1"
+                            Value="0"
+                            Margin="0,0,12,0"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Center"
+                            IsMoveToPointEnabled="True"
+                            SmallChange="1"
+                            LargeChange="5"
+                            TickPlacement="None"
+                            PreviewMouseLeftButtonDown="VideoProgressSlider_PreviewMouseLeftButtonDown"
+                            PreviewMouseLeftButtonUp="VideoProgressSlider_PreviewMouseLeftButtonUp"
+                            ValueChanged="VideoProgressSlider_ValueChanged"
+                            LostMouseCapture="VideoProgressSlider_LostMouseCapture"
+                            Thumb.DragStarted="VideoProgressSlider_DragStarted"
+                            Thumb.DragCompleted="VideoProgressSlider_DragCompleted"/>
+                    <TextBlock x:Name="VideoProgressText"
+                               Grid.Column="1"
+                               Text="00:00 / 00:00"
+                               Foreground="White"
+                               VerticalAlignment="Center"
+                               FontFamily="Consolas"
+                               FontSize="12"
+                               TextAlignment="Right"
+                               Width="120"/>
+                </Grid>
+            </Border>
             <ListBox x:Name="GridViewControl"
                      Background="Transparent"
                      BorderThickness="0"

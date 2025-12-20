@@ -18,7 +18,10 @@ using System.Windows.Media.Animation;
 using System.Windows.Navigation;
 using System.Windows.Threading;
 using System.Windows.Controls.Primitives;
+using Microsoft.Win32;
 using WinForms = System.Windows.Forms;
+using TagLibFile = TagLib.File;
+using TagLibMediaTypes = TagLib.MediaTypes;
 
 namespace SimpleViewer;
 
@@ -52,6 +55,11 @@ public partial class MainWindow : Window
     private const double MaxGridZoom = 2.5;
     private const double GridZoomStep = 0.15;
     private const int MaxRecentFolders = 5;
+    private const string ExplorerDirectoryOpenKey = @"Software\Classes\Directory\shell\SimpleViewer.Open";
+    private const string ExplorerDirectoryAddKey = @"Software\Classes\Directory\shell\SimpleViewer.Add";
+
+    private sealed record StartupRequest(bool Append, List<string> Paths);
+    private sealed record ExplorerMenuEntry(string KeyPath, string DisplayName, bool AppendArgument);
 
     private sealed class MediaItem
     {
@@ -108,6 +116,10 @@ public partial class MainWindow : Window
     {
         ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v"
     };
+    private static readonly string[] AllSupportedExtensions = ImageExtensions
+        .Concat(VideoExtensions)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
 
     private readonly List<MediaItem> _allItems = new();
     private readonly List<MediaItem> _filteredItems = new();
@@ -118,6 +130,9 @@ public partial class MainWindow : Window
     private readonly ScaleTransform _imageScaleTransform = new(1.0, 1.0);
     private readonly TranslateTransform _imagePanTransform = new();
     private readonly TransformGroup _imageTransformGroup = new();
+    private readonly ScaleTransform _videoScaleTransform = new(1.0, 1.0);
+    private readonly TranslateTransform _videoPanTransform = new();
+    private readonly TransformGroup _videoTransformGroup = new();
     private readonly string _recentFoldersPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SimpleViewer", "recentFolders.json");
     private static string? _iconBase64;
     private static readonly string IconLibraryPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "imageres.dll");
@@ -152,7 +167,12 @@ public partial class MainWindow : Window
     private WindowStyle _previousWindowStyle;
     private ResizeMode _previousResizeMode;
     private string _currentFolder = string.Empty;
+    private bool _isCustomSelection;
+    private string _customSelectionLabel = string.Empty;
+    private StartupRequest? _startupRequest;
+    private readonly DispatcherTimer _videoProgressTimer;
     private double _imageZoom = 1.0;
+    private double _videoZoom = 1.0;
     private double _videoVolume = 0.5;
     private bool _isVideoMuted;
     private bool _isVideoPaused;
@@ -162,8 +182,12 @@ public partial class MainWindow : Window
     private bool _ignoreGridSelectionChange;
     private bool _isLoading;
     private bool _isPanningImage;
+    private bool _isPanningVideo;
     private System.Windows.Point _panStartPoint;
     private double _gridZoom = 1.0;
+    private bool _isScrubbingVideo;
+    private TimeSpan _knownVideoDuration = TimeSpan.Zero;
+    private bool _slideshowWaitingForVideoEnd;
 
     public MainWindow()
     {
@@ -176,6 +200,14 @@ public partial class MainWindow : Window
             ImageViewer.RenderTransformOrigin = new System.Windows.Point(0.5, 0.5);
         }
 
+        if (VideoViewer is not null)
+        {
+            _videoTransformGroup.Children.Add(_videoScaleTransform);
+            _videoTransformGroup.Children.Add(_videoPanTransform);
+            VideoViewer.RenderTransform = _videoTransformGroup;
+            VideoViewer.RenderTransformOrigin = new System.Windows.Point(0.5, 0.5);
+        }
+
         Title = $"Simple Viewer v{AppVersion}";
 
         _slideshowTimer = new DispatcherTimer
@@ -183,9 +215,17 @@ public partial class MainWindow : Window
             Interval = TimeSpan.FromSeconds(_slideshowIntervalSeconds)
         };
         _slideshowTimer.Tick += (_, _) => ShowNextItem(fromTimer: true);
+        _videoProgressTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(200)
+        };
+        _videoProgressTimer.Tick += (_, _) => UpdateVideoProgressDisplay();
         ApplySystemIcons();
         UpdateSortMenuChecks();
         LoadRecentFolders();
+        _startupRequest = ParseStartupRequest(Environment.GetCommandLineArgs());
+        Loaded += MainWindow_Loaded;
+        UpdateSelectionLabel();
     }
 
     private async void BrowseButton_Click(object sender, RoutedEventArgs e)
@@ -206,7 +246,6 @@ public partial class MainWindow : Window
             }
 
             await LoadFolderAsync(dialog.SelectedPath);
-            FolderPathText.Text = dialog.SelectedPath;
         }
     }
 
@@ -228,6 +267,174 @@ public partial class MainWindow : Window
             menu.Placement = PlacementMode.Bottom;
             menu.IsOpen = true;
         }
+    }
+
+    private void InstallExplorerIntegrationMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (TryInstallExplorerIntegration())
+            {
+                System.Windows.MessageBox.Show("Explorer context menu installed. Right-click supported folders or media files to open or add them in Simple Viewer.", "Simple Viewer", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show($"Unable to install the Explorer context menu.\n{ex.Message}", "Simple Viewer", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void RemoveExplorerIntegrationMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            foreach (var keyPath in EnumerateExplorerRegistryKeys())
+            {
+                Registry.CurrentUser.DeleteSubKeyTree(keyPath, throwOnMissingSubKey: false);
+            }
+
+            System.Windows.MessageBox.Show("Explorer context menu entries removed.", "Simple Viewer", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show($"Unable to remove the Explorer context menu.\n{ex.Message}", "Simple Viewer", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private bool TryInstallExplorerIntegration()
+    {
+        var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+        if (string.IsNullOrWhiteSpace(exePath) || !File.Exists(exePath))
+        {
+            System.Windows.MessageBox.Show("Unable to locate SimpleViewer.exe for context menu registration.", "Simple Viewer", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+        foreach (var entry in EnumerateExplorerMenuEntries())
+        {
+            var command = entry.AppendArgument
+                ? $"\"{exePath}\" --add \"%1\""
+                : $"\"{exePath}\" \"%1\"";
+            RegisterContextMenuKey(entry.KeyPath, entry.DisplayName, command, exePath);
+        }
+
+        return true;
+    }
+
+    private static void RegisterContextMenuKey(string keyPath, string displayName, string command, string? iconPath)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(keyPath);
+        key?.SetValue(null, displayName);
+        if (!string.IsNullOrWhiteSpace(iconPath))
+        {
+            key?.SetValue("Icon", iconPath);
+        }
+
+        using var commandKey = Registry.CurrentUser.CreateSubKey($"{keyPath}\\command");
+        commandKey?.SetValue(null, command);
+    }
+
+    private static IEnumerable<ExplorerMenuEntry> EnumerateExplorerMenuEntries()
+    {
+        yield return new ExplorerMenuEntry(ExplorerDirectoryOpenKey, "Open in Simple Viewer", AppendArgument: false);
+        yield return new ExplorerMenuEntry(ExplorerDirectoryAddKey, "Add to Simple Viewer selection", AppendArgument: true);
+
+        foreach (var extension in AllSupportedExtensions)
+        {
+            var normalized = NormalizeExtensionForRegistry(extension);
+            var basePath = $@"Software\Classes\SystemFileAssociations\{normalized}\shell\SimpleViewer";
+            yield return new ExplorerMenuEntry($"{basePath}.Open", "Open in Simple Viewer", AppendArgument: false);
+            yield return new ExplorerMenuEntry($"{basePath}.Add", "Add to Simple Viewer selection", AppendArgument: true);
+        }
+    }
+
+    private static IEnumerable<string> EnumerateExplorerRegistryKeys()
+    {
+        return EnumerateExplorerMenuEntries()
+            .Select(entry => entry.KeyPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeExtensionForRegistry(string extension)
+    {
+        if (string.IsNullOrWhiteSpace(extension))
+        {
+            return ".tmp";
+        }
+
+        return extension.StartsWith(".", StringComparison.Ordinal) ? extension : $".{extension}";
+    }
+
+    private StartupRequest? ParseStartupRequest(string[] args)
+    {
+        if (args is null || args.Length <= 1)
+        {
+            return null;
+        }
+
+        var paths = new List<string>();
+        var append = false;
+        for (int i = 1; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (string.IsNullOrWhiteSpace(arg))
+            {
+                continue;
+            }
+
+            if (string.Equals(arg, "--add", StringComparison.OrdinalIgnoreCase))
+            {
+                append = true;
+                continue;
+            }
+
+            paths.Add(arg.Trim('"'));
+        }
+
+        return paths.Count == 0 ? null : new StartupRequest(append, paths);
+    }
+
+    private async void MainWindow_Loaded(object? sender, RoutedEventArgs e)
+    {
+        Loaded -= MainWindow_Loaded;
+        if (_startupRequest is null)
+        {
+            return;
+        }
+
+        await HandleStartupRequestAsync(_startupRequest);
+    }
+
+    private async Task HandleStartupRequestAsync(StartupRequest request)
+    {
+        var normalized = request.Paths
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => Environment.ExpandEnvironmentVariables(p.Trim('"')))
+            .ToList();
+        if (normalized.Count == 0)
+        {
+            return;
+        }
+
+        if (!request.Append && normalized.Count == 1 && Directory.Exists(normalized[0]) && !IsDeleteFolder(normalized[0]))
+        {
+            await LoadFolderAsync(normalized[0]);
+            return;
+        }
+
+        var includeSubfolders = RecursiveCheckBox?.IsChecked == true;
+        var newItems = await Task.Run(() => BuildMediaItemsFromSelection(normalized, includeSubfolders));
+        if (newItems.Count == 0)
+        {
+            var folder = normalized.FirstOrDefault(Directory.Exists);
+            if (!string.IsNullOrEmpty(folder) && !IsDeleteFolder(folder))
+            {
+                await LoadFolderAsync(folder);
+            }
+
+            return;
+        }
+
+        ApplyCustomItems(newItems, request.Append && _allItems.Count > 0);
     }
 
     private async Task LoadFolderAsync(string folderPath, bool resetHidden = true, bool preserveSelection = false)
@@ -254,6 +461,8 @@ public partial class MainWindow : Window
             var items = await Task.Run(() => BuildMediaItems(folderPath, searchOption));
 
             _currentFolder = folderPath;
+            _isCustomSelection = false;
+            _customSelectionLabel = string.Empty;
             AddRecentFolder(folderPath);
             _allItems.Clear();
             if (resetHidden)
@@ -267,6 +476,7 @@ public partial class MainWindow : Window
             }
 
             _allItems.AddRange(items);
+            UpdateSelectionLabel();
             SortAllItems();
             ApplyFilters();
         }
@@ -274,6 +484,64 @@ public partial class MainWindow : Window
         {
             _isLoading = false;
             SetLoadingState(false);
+        }
+    }
+
+    private void ApplyCustomItems(List<MediaItem> newItems, bool append, string? labelOverride = null)
+    {
+        if (!append)
+        {
+            _allItems.Clear();
+            _hiddenPaths.Clear();
+            _currentIndex = -1;
+        }
+
+        var knownPaths = new HashSet<string>(_allItems.Select(i => i.Path), StringComparer.OrdinalIgnoreCase);
+        foreach (var item in newItems)
+        {
+            if (knownPaths.Add(item.Path))
+            {
+                _allItems.Add(item);
+            }
+        }
+
+        if (_allItems.Count == 0)
+        {
+            System.Windows.MessageBox.Show("No supported images or videos were found.", "Simple Viewer", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _isCustomSelection = true;
+        _currentFolder = string.Empty;
+        UpdateSelectionLabel(labelOverride);
+        SortAllItems();
+        ApplyFilters();
+    }
+
+    private void UpdateSelectionLabel(string? customOverride = null)
+    {
+        if (FolderPathText is null)
+        {
+            return;
+        }
+
+        if (_isCustomSelection)
+        {
+            if (!string.IsNullOrWhiteSpace(customOverride))
+            {
+                _customSelectionLabel = customOverride!;
+            }
+            else
+            {
+                _customSelectionLabel = $"Custom selection ({_allItems.Count} items)";
+            }
+
+            FolderPathText.Text = _customSelectionLabel;
+        }
+        else
+        {
+            FolderPathText.Text = string.IsNullOrEmpty(_currentFolder) ? "No folder selected" : _currentFolder;
+            _customSelectionLabel = string.Empty;
         }
     }
 
@@ -322,34 +590,88 @@ public partial class MainWindow : Window
         }
     }
 
+    private static bool TryCreateMediaItem(string filePath, out MediaItem? item)
+    {
+        item = null;
+        if (!File.Exists(filePath))
+        {
+            return false;
+        }
+
+        var extension = Path.GetExtension(filePath);
+        if (string.IsNullOrEmpty(extension))
+        {
+            return false;
+        }
+
+        var directoryOfFile = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(directoryOfFile) && IsDeleteFolder(directoryOfFile))
+        {
+            return false;
+        }
+
+        MediaType type;
+        if (ImageExtensions.Contains(extension))
+        {
+            type = MediaType.Image;
+        }
+        else if (VideoExtensions.Contains(extension))
+        {
+            type = MediaType.Video;
+        }
+        else
+        {
+            return false;
+        }
+
+        var createdAt = File.GetCreationTime(filePath);
+        var modifiedAt = File.GetLastWriteTime(filePath);
+        item = new MediaItem(filePath, type, createdAt, modifiedAt);
+        return true;
+    }
+
     private static List<MediaItem> BuildMediaItems(string folderPath, SearchOption searchOption)
     {
         var items = new List<MediaItem>();
 
         foreach (var file in Directory.EnumerateFiles(folderPath, "*.*", searchOption))
         {
-            var extension = Path.GetExtension(file);
-            if (extension is null)
+            if (TryCreateMediaItem(file, out var mediaItem) && mediaItem is not null)
+            {
+                items.Add(mediaItem);
+            }
+        }
+
+        return items;
+    }
+
+    private List<MediaItem> BuildMediaItemsFromSelection(IEnumerable<string> paths, bool includeSubfolders)
+    {
+        var items = new List<MediaItem>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var searchOption = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+
+        foreach (var raw in paths)
+        {
+            var path = raw?.Trim();
+            if (string.IsNullOrEmpty(path))
             {
                 continue;
             }
 
-            var directoryOfFile = Path.GetDirectoryName(file);
-            if (!string.IsNullOrEmpty(directoryOfFile) && IsDeleteFolder(directoryOfFile))
+            if (Directory.Exists(path) && !IsDeleteFolder(path))
             {
-                continue;
+                foreach (var mediaItem in BuildMediaItems(path, searchOption))
+                {
+                    if (seen.Add(mediaItem.Path))
+                    {
+                        items.Add(mediaItem);
+                    }
+                }
             }
-
-            var createdAt = File.GetCreationTime(file);
-            var modifiedAt = File.GetLastWriteTime(file);
-
-            if (ImageExtensions.Contains(extension))
+            else if (TryCreateMediaItem(path, out var item) && item is not null && seen.Add(item.Path))
             {
-                items.Add(new MediaItem(file, MediaType.Image, createdAt, modifiedAt));
-            }
-            else if (VideoExtensions.Contains(extension))
-            {
-                items.Add(new MediaItem(file, MediaType.Video, createdAt, modifiedAt));
+                items.Add(item);
             }
         }
 
@@ -442,6 +764,7 @@ public partial class MainWindow : Window
         VideoViewer.Visibility = Visibility.Collapsed;
         VideoViewer.Source = null;
         _isVideoPaused = false;
+        HideVideoProgressUi();
         var fileName = GetDisplayFileName(path);
         ResetImageZoom();
 
@@ -464,6 +787,10 @@ public partial class MainWindow : Window
             ImageViewer.Source = null;
             UpdateMediaInfo($"File: {fileName}", "Size: --");
         }
+        finally
+        {
+            EnsureSlideshowTimerForCurrentMedia();
+        }
     }
 
     private void ShowVideo(string path)
@@ -473,6 +800,7 @@ public partial class MainWindow : Window
         var fileName = GetDisplayFileName(path);
 
         VideoViewer.Visibility = Visibility.Visible;
+        ResetVideoZoom();
         VideoViewer.Source = new Uri(path);
         VideoViewer.Position = TimeSpan.Zero;
         VideoViewer.LoadedBehavior = MediaState.Manual;
@@ -482,8 +810,11 @@ public partial class MainWindow : Window
         VideoViewer.Volume = _videoVolume;
         VideoViewer.IsMuted = _isVideoMuted;
         _isVideoPaused = false;
+        ShowVideoProgressUi();
+        UpdateVideoProgressDisplay(TimeSpan.Zero);
         UpdateMediaInfo($"File: {fileName}", GetVideoInfoText());
         UpdateMetadataPanelIfVisible();
+        EnsureSlideshowTimerForCurrentMedia();
     }
 
     private void ResetImageZoom()
@@ -506,10 +837,36 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ResetVideoZoom()
+    {
+        _videoZoom = 1.0;
+        _videoScaleTransform.ScaleX = 1.0;
+        _videoScaleTransform.ScaleY = 1.0;
+        ResetVideoPan();
+    }
+
+    private void AdjustVideoZoom(bool zoomIn)
+    {
+        var delta = zoomIn ? ImageZoomStep : -ImageZoomStep;
+        _videoZoom = Math.Clamp(_videoZoom + delta, MinImageZoom, MaxImageZoom);
+        _videoScaleTransform.ScaleX = _videoZoom;
+        _videoScaleTransform.ScaleY = _videoZoom;
+        if (_videoZoom <= 1.0)
+        {
+            ResetVideoPan();
+        }
+    }
+
     private void ResetImagePan()
     {
         _imagePanTransform.X = 0;
         _imagePanTransform.Y = 0;
+    }
+
+    private void ResetVideoPan()
+    {
+        _videoPanTransform.X = 0;
+        _videoPanTransform.Y = 0;
     }
 
     private bool TryHandleVideoVolumeKey(Key key)
@@ -611,8 +968,226 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_slideshowWaitingForVideoEnd && SlideshowCheckBox?.IsChecked == true)
+        {
+            _slideshowWaitingForVideoEnd = false;
+            ShowNextItem(fromTimer: true);
+            return;
+        }
+
         VideoViewer.Position = TimeSpan.Zero;
+        _isVideoPaused = false;
         VideoViewer.Play();
+        UpdateVideoProgressDisplay(TimeSpan.Zero);
+    }
+
+    private void VideoViewer_MediaOpened(object? sender, RoutedEventArgs e)
+    {
+        if (VideoViewer.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        if (VideoViewer.NaturalDuration.HasTimeSpan)
+        {
+            _knownVideoDuration = VideoViewer.NaturalDuration.TimeSpan;
+        }
+
+        UpdateVideoProgressDisplay();
+    }
+
+    private void ShowVideoProgressUi()
+    {
+        _videoProgressTimer.Stop();
+        _isScrubbingVideo = false;
+        if (VideoProgressPanel is not null)
+        {
+            VideoProgressPanel.Visibility = Visibility.Visible;
+        }
+
+        if (VideoProgressSlider is not null)
+        {
+            VideoProgressSlider.Minimum = 0;
+            VideoProgressSlider.Maximum = 1;
+            VideoProgressSlider.Value = 0;
+            VideoProgressSlider.IsEnabled = false;
+        }
+
+        if (VideoProgressText is not null)
+        {
+            VideoProgressText.Text = "00:00 / 00:00";
+        }
+
+        _knownVideoDuration = TimeSpan.Zero;
+        _videoProgressTimer.Start();
+    }
+
+    private void HideVideoProgressUi()
+    {
+        _videoProgressTimer.Stop();
+        _isScrubbingVideo = false;
+        _knownVideoDuration = TimeSpan.Zero;
+        if (VideoProgressPanel is not null)
+        {
+            VideoProgressPanel.Visibility = Visibility.Collapsed;
+        }
+
+        if (VideoProgressSlider is not null)
+        {
+            VideoProgressSlider.Minimum = 0;
+            VideoProgressSlider.Maximum = 1;
+            VideoProgressSlider.Value = 0;
+            VideoProgressSlider.IsEnabled = false;
+        }
+
+        if (VideoProgressText is not null)
+        {
+            VideoProgressText.Text = "00:00 / 00:00";
+        }
+    }
+
+    private void UpdateVideoProgressDisplay(TimeSpan? overridePosition = null)
+    {
+        if (VideoProgressSlider is null || VideoProgressText is null || VideoViewer is null)
+        {
+            return;
+        }
+
+        if (VideoViewer.NaturalDuration.HasTimeSpan)
+        {
+            _knownVideoDuration = VideoViewer.NaturalDuration.TimeSpan;
+        }
+
+        var duration = _knownVideoDuration;
+        if (duration <= TimeSpan.Zero)
+        {
+            VideoProgressSlider.IsEnabled = false;
+            VideoProgressSlider.Maximum = 1;
+            if (!_isScrubbingVideo)
+            {
+                VideoProgressSlider.Value = 0;
+            }
+
+            VideoProgressText.Text = "00:00 / 00:00";
+            return;
+        }
+
+        var durationSeconds = duration.TotalSeconds;
+        VideoProgressSlider.IsEnabled = true;
+        VideoProgressSlider.Maximum = durationSeconds;
+
+        double displaySeconds;
+        if (_isScrubbingVideo && !overridePosition.HasValue)
+        {
+            displaySeconds = Math.Clamp(VideoProgressSlider.Value, 0, durationSeconds);
+        }
+        else
+        {
+            var position = overridePosition ?? VideoViewer.Position;
+            displaySeconds = Math.Clamp(position.TotalSeconds, 0, durationSeconds);
+            if (!_isScrubbingVideo)
+            {
+                VideoProgressSlider.Value = displaySeconds;
+            }
+        }
+
+        VideoProgressText.Text = $"{FormatTimestamp(displaySeconds)} / {FormatTimestamp(durationSeconds)}";
+    }
+
+    private static string FormatTimestamp(double totalSeconds)
+    {
+        if (double.IsNaN(totalSeconds) || double.IsInfinity(totalSeconds))
+        {
+            totalSeconds = 0;
+        }
+
+        var clamped = Math.Max(0, totalSeconds);
+        var time = TimeSpan.FromSeconds(clamped);
+        if (time.TotalHours >= 1)
+        {
+            return $"{(int)time.TotalHours:00}:{time.Minutes:00}:{time.Seconds:00}";
+        }
+
+        return $"{time.Minutes:00}:{time.Seconds:00}";
+    }
+
+    private void VideoProgressSlider_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (VideoViewer.Visibility != Visibility.Visible || VideoProgressSlider is null || !VideoProgressSlider.IsEnabled)
+        {
+            return;
+        }
+
+        _isScrubbingVideo = true;
+    }
+
+    private void VideoProgressSlider_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isScrubbingVideo)
+        {
+            return;
+        }
+
+        _isScrubbingVideo = false;
+        SeekVideoToSlider();
+    }
+
+    private void VideoProgressSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_isScrubbingVideo)
+        {
+            UpdateVideoProgressDisplay(TimeSpan.FromSeconds(e.NewValue));
+        }
+    }
+
+    private void VideoProgressSlider_LostMouseCapture(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (!_isScrubbingVideo)
+        {
+            return;
+        }
+
+        _isScrubbingVideo = false;
+        SeekVideoToSlider();
+    }
+
+    private void VideoProgressSlider_DragStarted(object sender, DragStartedEventArgs e)
+    {
+        if (VideoProgressSlider is null || !VideoProgressSlider.IsEnabled || VideoViewer.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        _isScrubbingVideo = true;
+    }
+
+    private void VideoProgressSlider_DragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        if (!_isScrubbingVideo)
+        {
+            return;
+        }
+
+        _isScrubbingVideo = false;
+        SeekVideoToSlider();
+    }
+
+    private void SeekVideoToSlider()
+    {
+        if (VideoProgressSlider is null || VideoViewer.Visibility != Visibility.Visible || !VideoProgressSlider.IsEnabled)
+        {
+            return;
+        }
+
+        var seconds = Math.Clamp(VideoProgressSlider.Value, 0, VideoProgressSlider.Maximum);
+        var position = TimeSpan.FromSeconds(seconds);
+        VideoViewer.Position = position;
+        if (_isVideoPaused)
+        {
+            VideoViewer.Pause();
+        }
+
+        UpdateVideoProgressDisplay(position);
     }
 
     private void UpdateMediaInfo(string fileNameText, string sizeText)
@@ -642,11 +1217,14 @@ public partial class MainWindow : Window
         VideoViewer.Source = null;
         VideoViewer.Visibility = Visibility.Collapsed;
         _isVideoPaused = false;
+        HideVideoProgressUi();
+        ResetVideoZoom();
         UpdateMediaInfo("File: --", "Size: --");
         if (GridViewControl is not null)
         {
             GridViewControl.SelectedIndex = -1;
         }
+        UpdateSelectionLabel();
     }
 
     private MediaItem? GetCurrentItem()
@@ -777,6 +1355,11 @@ public partial class MainWindow : Window
             if (ImageViewer.Visibility == Visibility.Visible && GetCurrentItem()?.Type == MediaType.Image)
             {
                 AdjustImageZoom(e.Delta > 0);
+                e.Handled = true;
+            }
+            else if (VideoViewer.Visibility == Visibility.Visible && GetCurrentItem()?.Type == MediaType.Video)
+            {
+                AdjustVideoZoom(e.Delta > 0);
                 e.Handled = true;
             }
 
@@ -1113,14 +1696,12 @@ public partial class MainWindow : Window
 
         if (SlideshowCheckBox.IsChecked == true && _filteredItems.Count > 0)
         {
-            if (!_slideshowTimer.IsEnabled)
-            {
-                _slideshowTimer.Start();
-            }
+            EnsureSlideshowTimerForCurrentMedia();
         }
         else
         {
             _slideshowTimer.Stop();
+            _slideshowWaitingForVideoEnd = false;
         }
     }
 
@@ -1130,6 +1711,48 @@ public partial class MainWindow : Window
         {
             _slideshowTimer.Stop();
             _slideshowTimer.Start();
+        }
+    }
+
+    private void EnsureSlideshowTimerForCurrentMedia()
+    {
+        EnsureSlideshowTimerForMedia(GetCurrentItem());
+    }
+
+    private void EnsureSlideshowTimerForMedia(MediaItem? item)
+    {
+        if (SlideshowCheckBox?.IsChecked != true)
+        {
+            _slideshowWaitingForVideoEnd = false;
+            return;
+        }
+
+        if (item is null)
+        {
+            _slideshowWaitingForVideoEnd = false;
+            _slideshowTimer.Stop();
+            return;
+        }
+
+        if (item.Type == MediaType.Video)
+        {
+            _slideshowWaitingForVideoEnd = true;
+            if (_slideshowTimer.IsEnabled)
+            {
+                _slideshowTimer.Stop();
+            }
+        }
+        else
+        {
+            _slideshowWaitingForVideoEnd = false;
+            if (_slideshowTimer.IsEnabled)
+            {
+                RestartSlideshowTimer();
+            }
+            else
+            {
+                _slideshowTimer.Start();
+            }
         }
     }
 
@@ -1145,7 +1768,7 @@ public partial class MainWindow : Window
 
     private void Window_DragEnter(object sender, System.Windows.DragEventArgs e)
     {
-        if (HasValidFolder(e.Data))
+        if (TryGetDropPaths(e.Data, out _))
         {
             e.Effects = System.Windows.DragDropEffects.Copy;
             e.Handled = true;
@@ -1163,25 +1786,43 @@ public partial class MainWindow : Window
 
     private async void Window_Drop(object sender, System.Windows.DragEventArgs e)
     {
-        if (!HasValidFolder(e.Data))
+        if (!TryGetDropPaths(e.Data, out var droppedPaths))
         {
             return;
         }
 
-        if (e.Data.GetData(System.Windows.DataFormats.FileDrop) is not string[] paths)
+        var includeSubfolders = RecursiveCheckBox?.IsChecked == true;
+        var newItems = await Task.Run(() => BuildMediaItemsFromSelection(droppedPaths, includeSubfolders));
+        if (newItems.Count == 0)
         {
-            return;
-        }
-
-        foreach (var path in paths)
-        {
-            if (Directory.Exists(path) && !IsDeleteFolder(path))
+            var folder = droppedPaths.FirstOrDefault(Directory.Exists);
+            if (!string.IsNullOrEmpty(folder) && !IsDeleteFolder(folder))
             {
-                await LoadFolderAsync(path);
-                FolderPathText.Text = path;
-                break;
+                await LoadFolderAsync(folder);
             }
+
+            return;
         }
+
+        var append = false;
+        if (_allItems.Count > 0)
+        {
+            var result = System.Windows.MessageBox.Show(
+                "Add dropped items to the current selection?\nYes = Add, No = Replace, Cancel = Ignore.",
+                "Simple Viewer",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Question,
+                MessageBoxResult.Yes);
+
+            if (result == MessageBoxResult.Cancel)
+            {
+                return;
+            }
+
+            append = result == MessageBoxResult.Yes;
+        }
+
+        ApplyCustomItems(newItems, append);
     }
 
     private void ImageViewer_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1220,6 +1861,45 @@ public partial class MainWindow : Window
 
         _isPanningImage = false;
         ImageViewer.ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    private void VideoViewer_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_videoZoom <= 1.0 || VideoViewer.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        _isPanningVideo = true;
+        _panStartPoint = e.GetPosition(this);
+        VideoViewer.CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void VideoViewer_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (!_isPanningVideo || VideoViewer.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        var current = e.GetPosition(this);
+        var delta = current - _panStartPoint;
+        _panStartPoint = current;
+        _videoPanTransform.X += delta.X;
+        _videoPanTransform.Y += delta.Y;
+    }
+
+    private void VideoViewer_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isPanningVideo)
+        {
+            return;
+        }
+
+        _isPanningVideo = false;
+        VideoViewer.ReleaseMouseCapture();
         e.Handled = true;
     }
 
@@ -1288,19 +1968,49 @@ public partial class MainWindow : Window
         return string.Equals(Path.GetFileName(Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)), DeleteFolderName, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool HasValidFolder(System.Windows.IDataObject data)
+    private static bool TryGetDropPaths(System.Windows.IDataObject data, out List<string> paths)
     {
+        paths = new List<string>();
         if (!data.GetDataPresent(System.Windows.DataFormats.FileDrop))
         {
             return false;
         }
 
-        if (data.GetData(System.Windows.DataFormats.FileDrop) is not string[] paths)
+        if (data.GetData(System.Windows.DataFormats.FileDrop) is not string[] rawPaths)
         {
             return false;
         }
 
-        return paths.Any(path => Directory.Exists(path) && !IsDeleteFolder(path));
+        foreach (var raw in rawPaths)
+        {
+            var path = raw?.Trim();
+            if (string.IsNullOrEmpty(path))
+            {
+                continue;
+            }
+
+            if (Directory.Exists(path) && !IsDeleteFolder(path))
+            {
+                paths.Add(path);
+            }
+            else if (File.Exists(path) && IsSupportedFileType(path))
+            {
+                paths.Add(path);
+            }
+        }
+
+        return paths.Count > 0;
+    }
+
+    private static bool IsSupportedFileType(string path)
+    {
+        var extension = Path.GetExtension(path);
+        if (string.IsNullOrEmpty(extension))
+        {
+            return false;
+        }
+
+        return ImageExtensions.Contains(extension) || VideoExtensions.Contains(extension);
     }
 
     private static string GetUniqueDestinationPath(string folder, string originalFileName)
@@ -1696,10 +2406,34 @@ builder.Append("""
         <li>Arrow Up/Down - Adjust video volume while playing</li>
         <li>M - Toggle mute for the current video</li>
         <li>Space - Pause/Resume video playback</li>
+        <li>Timeline slider - Click or drag the progress bar to seek</li>
+        <li>Ctrl + Mouse Wheel - Zoom the current video</li>
+        <li>Drag (while zoomed) - Pan the video frame</li>
     </ul>
 </div>
 <div>
     <h2>Release Highlights</h2>
+    <h3>v1.2.0</h3>
+    <ul>
+        <li><strong>Video timeline</strong>
+            <ul>
+                <li>New scrub bar shows elapsed/total time and supports precise seeking.</li>
+                <li>Slider updates while looping videos and respects pause/mute states.</li>
+            </ul>
+        </li>
+        <li><strong>Video zoom & pan</strong>
+            <ul>
+                <li>Ctrl + mouse wheel now zooms into videos, just like images.</li>
+                <li>Click-drag pans the video when zoomed in for pixel-level inspection.</li>
+            </ul>
+        </li>
+        <li><strong>Video metadata</strong>
+            <ul>
+                <li>Metadata panel now reads duration, codecs, bitrate, and tags from video files.</li>
+                <li>Powered by TagLib# for broad format compatibility.</li>
+            </ul>
+        </li>
+    </ul>
     <h3>v1.1.0</h3>
     <ul>
         <li><strong>Toolbar & layout</strong>
@@ -1747,6 +2481,13 @@ builder.Append("""
             <ul>
                 <li>EXIF/Comfy metadata panel with Copy button for the full text.</li>
                 <li>Ctrl + C copies the current image directly to the clipboard.</li>
+            </ul>
+        </li>
+        <li><strong>Custom selections & Explorer</strong>
+            <ul>
+                <li>Drag folders/files into the window and choose Add vs Replace when a session is active.</li>
+                <li>Command-line inputs accept folders/files with an optional <code>--add</code> switch to append selections.</li>
+                <li>Options &rarr; Explorer integration installs/removes right-click entries for supported folders and media files.</li>
             </ul>
         </li>
         <li><strong>Help & docs</strong>
@@ -1900,14 +2641,7 @@ builder.Append("""
             return;
         }
 
-        if (item.Type != MediaType.Image)
-        {
-            MetadataTextBox.Text = "Metadata is currently available for images only.";
-            MetadataPanel.Visibility = Visibility.Visible;
-            return;
-        }
-
-        var text = GetOrLoadMetadata(item.Path);
+        var text = GetOrLoadMetadata(item);
         MetadataTextBox.Text = text;
         MetadataPanel.Visibility = Visibility.Visible;
     }
@@ -1922,19 +2656,25 @@ builder.Append("""
         ShowMetadataForCurrentItem();
     }
 
-    private string GetOrLoadMetadata(string path)
+    private string GetOrLoadMetadata(MediaItem item)
     {
-        if (_metadataCache.TryGetValue(path, out var cached))
+        if (_metadataCache.TryGetValue(item.Path, out var cached))
         {
             return cached;
         }
 
-        var metadata = ExtractMetadata(path);
-        _metadataCache[path] = metadata;
+        var metadata = item.Type switch
+        {
+            MediaType.Video => ExtractVideoMetadata(item.Path),
+            MediaType.Image => ExtractImageMetadata(item.Path),
+            _ => "No metadata available for this media type."
+        };
+
+        _metadataCache[item.Path] = metadata;
         return metadata;
     }
 
-    private static string ExtractMetadata(string path)
+    private static string ExtractImageMetadata(string path)
     {
         string? wpfMetadata = null;
         string? codecError = null;
@@ -2044,6 +2784,186 @@ builder.Append("""
         return "No metadata found.";
     }
 
+    private static string ExtractVideoMetadata(string path)
+    {
+        var summaryEntries = new List<(string Key, string Value)>();
+        var seenSummaryKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var summaryNotes = new List<string>();
+        var sections = new List<string>();
+
+        try
+        {
+            using var tagFile = TagLibFile.Create(path);
+            var builder = new StringBuilder();
+            builder.AppendLine($"File: {Path.GetFileName(path)}");
+            if (File.Exists(path))
+            {
+                var info = new FileInfo(path);
+                builder.AppendLine($"File Size: {FormatFileSize(info.Length)}");
+            }
+
+            var properties = tagFile.Properties;
+            if (properties is not null)
+            {
+                if (properties.Duration > TimeSpan.Zero)
+                {
+                    var durationText = FormatTimestamp(properties.Duration.TotalSeconds);
+                    builder.AppendLine($"Duration: {durationText}");
+                    AddSummaryEntry(summaryEntries, seenSummaryKeys, "Duration", durationText);
+                }
+
+                if (properties.VideoWidth > 0 && properties.VideoHeight > 0)
+                {
+                    var videoSize = $"{properties.VideoWidth} x {properties.VideoHeight}";
+                    builder.AppendLine($"Video Size: {videoSize}");
+                    AddSummaryEntry(summaryEntries, seenSummaryKeys, "Size", videoSize);
+                }
+
+                if (properties.AudioBitrate > 0)
+                {
+                    builder.AppendLine($"Audio Bitrate: {properties.AudioBitrate} kbps");
+                }
+
+                if (properties.AudioSampleRate > 0)
+                {
+                    builder.AppendLine($"Audio Sample Rate: {properties.AudioSampleRate} Hz");
+                }
+
+                var videoCodecs = properties.Codecs?
+                    .Where(codec => codec.MediaTypes.HasFlag(TagLibMediaTypes.Video))
+                    .Select(codec => codec.Description)
+                    .Where(desc => !string.IsNullOrWhiteSpace(desc))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (videoCodecs is { Count: > 0 })
+                {
+                    var codecText = string.Join(", ", videoCodecs);
+                    builder.AppendLine($"Video Codec(s): {codecText}");
+                    AddSummaryEntry(summaryEntries, seenSummaryKeys, "Video Codec", codecText);
+                }
+
+                var audioCodecs = properties.Codecs?
+                    .Where(codec => codec.MediaTypes.HasFlag(TagLibMediaTypes.Audio))
+                    .Select(codec => codec.Description)
+                    .Where(desc => !string.IsNullOrWhiteSpace(desc))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (audioCodecs is { Count: > 0 })
+                {
+                    var codecText = string.Join(", ", audioCodecs);
+                    builder.AppendLine($"Audio Codec(s): {codecText}");
+                    AddSummaryEntry(summaryEntries, seenSummaryKeys, "Audio Codec", codecText);
+                }
+            }
+
+            var tag = tagFile.Tag;
+            var tagSection = new StringBuilder();
+            if (tag is not null)
+            {
+                AppendMetadataField(tagSection, "Title", tag.Title);
+                AppendMetadataField(tagSection, "Album", tag.Album);
+                if (tag.Year > 0)
+                {
+                    AppendMetadataField(tagSection, "Year", tag.Year.ToString());
+                }
+
+                var performers = tag.Performers?.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
+                if (performers is { Length: > 0 })
+                {
+                    AppendMetadataField(tagSection, "Performers", string.Join(", ", performers));
+                }
+
+                var albumArtists = tag.AlbumArtists?.Where(a => !string.IsNullOrWhiteSpace(a)).ToArray();
+                if (albumArtists is { Length: > 0 })
+                {
+                    AppendMetadataField(tagSection, "Album Artists", string.Join(", ", albumArtists));
+                }
+
+                var genres = tag.Genres?.Where(g => !string.IsNullOrWhiteSpace(g)).ToArray();
+                if (genres is { Length: > 0 })
+                {
+                    AppendMetadataField(tagSection, "Genres", string.Join(", ", genres));
+                }
+
+                AppendMetadataField(tagSection, "Comment", tag.Comment);
+                if (tag.Track > 0)
+                {
+                    var trackLabel = tag.TrackCount > 0 ? $"{tag.Track} / {tag.TrackCount}" : tag.Track.ToString();
+                    AppendMetadataField(tagSection, "Track", trackLabel);
+                }
+            }
+
+            if (tagSection.Length > 0)
+            {
+                builder.AppendLine();
+                builder.AppendLine("Tag metadata:");
+                builder.Append(tagSection.ToString().TrimEnd());
+            }
+
+            if (builder.Length > 0)
+            {
+                sections.Add(builder.ToString().Trim());
+            }
+        }
+        catch (Exception ex)
+        {
+            return $"Unable to read metadata from the video file.\n{ex.Message}";
+        }
+
+        var comfyWorkflow = TryExtractComfyWorkflowFromVideo(path, summaryEntries, seenSummaryKeys, summaryNotes);
+        if (!string.IsNullOrWhiteSpace(comfyWorkflow))
+        {
+            sections.Add($"Embedded workflow metadata:{Environment.NewLine}{comfyWorkflow}");
+        }
+
+        if (summaryEntries.Count > 0 || summaryNotes.Count > 0)
+        {
+            var summaryBuilder = new StringBuilder();
+            summaryBuilder.AppendLine("Metadata summary:");
+            foreach (var entry in summaryEntries)
+            {
+                summaryBuilder.AppendLine($"{entry.Key}: {entry.Value}");
+            }
+
+            if (summaryNotes.Count > 0)
+            {
+                summaryBuilder.AppendLine();
+                foreach (var note in summaryNotes)
+                {
+                    summaryBuilder.AppendLine($"- {note}");
+                }
+            }
+
+            sections.Insert(0, summaryBuilder.ToString().TrimEnd());
+        }
+
+        if (sections.Count == 0)
+        {
+            return "No metadata found.";
+        }
+
+        return string.Join($"{Environment.NewLine}{Environment.NewLine}", sections);
+    }
+
+    private static string FormatFileSize(long bytes)
+    {
+        if (bytes < 0)
+        {
+            bytes = 0;
+        }
+
+        string[] units = { "B", "KB", "MB", "GB", "TB" };
+        double value = bytes;
+        var unitIndex = 0;
+        while (value >= 1024 && unitIndex < units.Length - 1)
+        {
+            value /= 1024;
+            unitIndex++;
+        }
+
+        return $"{value:0.##} {units[unitIndex]}";
+    }
+
     private static void AppendMetadataField(StringBuilder builder, string label, string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -2052,6 +2972,198 @@ builder.Append("""
         }
 
         builder.AppendLine($"{label}: {value}");
+    }
+
+    private static string? TryExtractComfyWorkflowFromVideo(
+        string path,
+        List<(string Key, string Value)> summaryEntries,
+        HashSet<string> seenSummaryKeys,
+        List<string> summaryNotes)
+    {
+        const int MaxScanBytes = 4 * 1024 * 1024;
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var length = stream.Length;
+            var bytesToRead = (int)Math.Min(length, MaxScanBytes);
+            var buffer = new byte[bytesToRead];
+            if (length > bytesToRead)
+            {
+                stream.Seek(length - bytesToRead, SeekOrigin.Begin);
+            }
+
+            var read = stream.Read(buffer, 0, buffer.Length);
+            if (read <= 0)
+            {
+                return null;
+            }
+
+            var text = Encoding.UTF8.GetString(buffer, 0, read);
+            var keywords = new[] { "\"workflow\"", "\"Workflow\"", "\"prompt\"", "\"Prompt\"", "\"nodes\"" };
+            foreach (var keyword in keywords)
+            {
+                var json = ExtractJsonBlockContainingKeyword(text, keyword);
+                if (!string.IsNullOrWhiteSpace(json))
+                {
+                    TryCollectSummaryFromJson(json, summaryEntries, seenSummaryKeys);
+                    return TryFormatJson(json);
+                }
+            }
+
+            return null;
+        }
+        catch
+        {
+            summaryNotes.Add("Unable to scan for embedded workflow metadata.");
+            return null;
+        }
+    }
+
+    private static string? ExtractJsonBlockContainingKeyword(string text, string keyword)
+    {
+        var index = text.IndexOf(keyword, StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            return null;
+        }
+
+        var start = text.LastIndexOf('{', index);
+        if (start < 0)
+        {
+            return null;
+        }
+
+        var depth = 0;
+        var inString = false;
+        for (var i = start; i < text.Length; i++)
+        {
+            var ch = text[i];
+            if (ch == '"' && (i == 0 || text[i - 1] != '\\'))
+            {
+                inString = !inString;
+            }
+
+            if (inString)
+            {
+                continue;
+            }
+
+            if (ch == '{')
+            {
+                depth++;
+            }
+            else if (ch == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return text.Substring(start, i - start + 1);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string TryFormatJson(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+        }
+        catch
+        {
+            return json;
+        }
+    }
+
+    private static void TryCollectSummaryFromJson(
+        string json,
+        List<(string Key, string Value)> summaryEntries,
+        HashSet<string> seenSummaryKeys)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            CollectSummaryFromJsonElement(document.RootElement, string.Empty, summaryEntries, seenSummaryKeys);
+        }
+        catch
+        {
+            // Ignore JSON parsing failures for summary generation.
+        }
+    }
+
+    private static void CollectSummaryFromJsonElement(
+        JsonElement element,
+        string path,
+        List<(string Key, string Value)> summaryEntries,
+        HashSet<string> seenSummaryKeys)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    var childPath = string.IsNullOrEmpty(path)
+                        ? property.Name
+                        : $"{path}.{property.Name}";
+                    CollectSummaryFromJsonElement(property.Value, childPath, summaryEntries, seenSummaryKeys);
+                }
+
+                break;
+            case JsonValueKind.Array:
+                var index = 0;
+                foreach (var item in element.EnumerateArray())
+                {
+                    CollectSummaryFromJsonElement(item, $"{path}[{index}]", summaryEntries, seenSummaryKeys);
+                    index++;
+                }
+
+                break;
+            case JsonValueKind.String:
+                AddSummaryEntryFromJsonPath(path, element.GetString(), summaryEntries, seenSummaryKeys);
+                break;
+            case JsonValueKind.Number:
+                AddSummaryEntryFromJsonPath(path, element.GetRawText(), summaryEntries, seenSummaryKeys);
+                break;
+            case JsonValueKind.True:
+            case JsonValueKind.False:
+                AddSummaryEntryFromJsonPath(path, element.GetBoolean().ToString(), summaryEntries, seenSummaryKeys);
+                break;
+        }
+    }
+
+    private static void AddSummaryEntryFromJsonPath(
+        string path,
+        string? value,
+        List<(string Key, string Value)> summaryEntries,
+        HashSet<string> seenSummaryKeys)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        if (TryMapSummaryKey(path, out var mappedLabel))
+        {
+            AddSummaryEntry(summaryEntries, seenSummaryKeys, mappedLabel, value);
+            return;
+        }
+
+        if (path.Contains("prompt", StringComparison.OrdinalIgnoreCase) ||
+            path.Contains("workflow", StringComparison.OrdinalIgnoreCase))
+        {
+            AddSummaryEntry(summaryEntries, seenSummaryKeys, path, value);
+        }
     }
 
     private static string ExtractPngTextMetadata(
